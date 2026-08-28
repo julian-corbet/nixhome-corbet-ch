@@ -7,16 +7,19 @@
 # wrong and MUST render -- without it, a typo in the shared base would make every other case "pass"
 # for the wrong reason.
 #
-# Two refusals additionally have their MESSAGE asserted by content, because `tryEval` can only say
+# The sharp refusals additionally have their MESSAGE asserted by content, because `tryEval` can only say
 # THAT something was refused. For the wake interlock in particular, half of what is being checked is
 # whether the refusal names both workloads and says what to do instead -- the failure it prevents is
 # a lost write between two workloads that both report healthy, which is the kind nobody finds by
 # looking at the cluster.
-{ pkgs, lib, nixidy, appsModule, addressingModule, clusterModule }:
+{ pkgs, lib, nixidy, catalogue, appsModule, addressingModule, clusterModule }:
 let
-  base = {
+  target = {
     nixidy.target.repository = "https://example.com/example-org/example-gitops.git";
     nixidy.target.branch = "main";
+  };
+
+  base = target // {
     nixhome.homePlatform = {
       namespaces = {
         belongings = "example-belongings";
@@ -38,6 +41,9 @@ let
   failures = values:
     map (a: a.message)
       (lib.filter (a: !a.assertion) (mkEnv values).config.nixidy.assertions);
+
+  activeWarningMessages = cfg:
+    map (warning: warning.message) (lib.filter (warning: warning.when) cfg.nixidy.warnings);
 
   sorted = lib.sort (a: b: a < b);
 
@@ -111,6 +117,104 @@ let
   goodCfg = (mkEnv goodHousehold).config;
 
   workloadNames = [ "assets" "chores" "groceries" "inventory" "scanner" ];
+
+  # A second environment receives the exact app projection the old hand-written translator
+  # produced. Comparing the fully resolved grammar subtrees catches a factory field that differs
+  # even when the rendered manifests happen to erase that difference.
+  legacyDefaults = {
+    image = null;
+    namespace = null;
+    createNamespace = false;
+    project = "example-home";
+    slot = null;
+    exposure = "internal";
+    scaling = "always";
+    state = { };
+    secretEnv = { };
+    envFromSecrets = [ ];
+    env = { };
+    args = [ ];
+  };
+
+  legacyStateOf = entry: w:
+    lib.mapAttrs
+      (key: backing: {
+        mountPath = entry.state.${key};
+        claim = backing.claim or null;
+        hostPath = backing.hostPath or null;
+        hostPathType = backing.hostPathType or "Directory";
+        readOnly = backing.readOnly or false;
+      })
+      w.state;
+
+  legacyVarsFromSecret = w: secret:
+    lib.mapAttrs (_: ref: ref.key)
+      (lib.filterAttrs (_: ref: ref.secret == secret) w.secretEnv);
+
+  legacySecretsOf = w:
+    let
+      names = lib.unique
+        (w.envFromSecrets ++ lib.mapAttrsToList (_: ref: ref.secret) w.secretEnv);
+    in
+    lib.listToAttrs (map
+      (secret: lib.nameValuePair secret (
+        { inherit secret; }
+        // lib.optionalAttrs (lib.elem secret w.envFromSecrets) { envFrom = true; }
+        // lib.optionalAttrs (legacyVarsFromSecret w secret != { }) {
+          env = legacyVarsFromSecret w secret;
+        }
+      ))
+      names);
+
+  legacyApp = domain: entry: declaration:
+    let
+      w = legacyDefaults // declaration;
+      namespace =
+        if w.namespace != null
+        then w.namespace
+        else base.nixhome.homePlatform.namespaces.${domain};
+    in
+    {
+      inherit namespace;
+      inherit (w) createNamespace project exposure scaling;
+      image = if w.image != null then w.image else "${entry.image}:${w.version}";
+      ports = lib.mapAttrs (_: number: { inherit number; }) entry.ports;
+      state = legacyStateOf entry w;
+      secrets = legacySecretsOf w;
+      env = entry.env // w.env;
+      args = entry.args ++ w.args;
+      probes.readiness = { port = entry.primaryPort; } // entry.readiness;
+    };
+
+  legacyApps =
+    lib.mapAttrs
+      (_: declaration:
+        let entry = catalogue.trackers.${declaration.tracker};
+        in legacyApp entry.domain entry declaration)
+      goodHousehold.nixhome.trackers
+    // lib.mapAttrs
+      (_: declaration:
+        let
+          entry = catalogue.companions.${declaration.companion};
+          domain = catalogue.trackers.${entry.serves}.domain;
+        in
+        legacyApp domain entry declaration)
+      goodHousehold.nixhome.companions;
+
+  legacyCfg = (nixidy.lib.mkEnv {
+    inherit pkgs;
+    modules = [
+      appsModule
+      addressingModule
+      target
+      { nixk3s.apps = legacyApps; }
+    ];
+  }).config;
+
+  defaultProjectCfg = (nixidy.lib.mkEnv {
+    inherit pkgs;
+    modules = [ appsModule addressingModule clusterModule target ];
+  }).config;
 
   ## ---------------------------------------------------------------------
   ## The failing direction
@@ -221,6 +325,31 @@ let
     lib.hasInfix "/config" unbackedMessage
     && lib.hasInfix "/usr/src/app/data" unbackedMessage;
 
+  slotCollisionMessages = lib.filter
+    (message: lib.hasInfix "slot 66 is claimed by 2 workloads" message)
+    (failures mustFail.two-workloads-on-one-slot);
+
+  namespaceAnchorMessages = lib.filter
+    (message: lib.hasInfix "Exactly one workload may create a namespace" message)
+    (failures mustFail.two-workloads-creating-one-namespace);
+
+  # One root-level warning used to repeat the factory warning. Matching the workload and platform
+  # term proves the shared warning is now the sole diagnostic, rather than merely finding one copy.
+  slotWithoutOriginMessages = lib.filter
+    (message:
+      lib.hasInfix "`assets` claims slot 64" message
+      && lib.hasInfix "homePlatform.origin" message)
+    (activeWarningMessages goodCfg);
+
+  pinnedImageCfg = (mkEnv (lib.recursiveUpdate goodHousehold {
+    nixhome.trackers.inventory.image =
+      "registry.example.com/example/inventory:0.0.0@sha256:0000000000000000000000000000000000000000000000000000000000000000";
+  })).config;
+
+  wholeImageWarningMessages = lib.filter
+    (message: lib.hasInfix "carries a whole image reference" message)
+    (activeWarningMessages pinnedImageCfg);
+
   ## ---------------------------------------------------------------------
   ## The band model, when it is part of the same render
   ## ---------------------------------------------------------------------
@@ -248,6 +377,9 @@ let
     "an empty household raises no assertion of its own -- an unused module must be silent" =
       lib.all (a: a.assertion) emptyCfg.nixidy.assertions;
 
+    "the legacy project default still resolves to default when the consumer omits it" =
+      defaultProjectCfg.nixhome.homePlatform.project == "default";
+
     # ── The control ───────────────────────────────────────────────────────────────────────────
     "a complete household renders" = renders goodHousehold;
 
@@ -259,6 +391,17 @@ let
       sorted (lib.subtractLists (lib.attrNames emptyCfg.applications) (lib.attrNames goodCfg.applications))
       == workloadNames
       && sorted (lib.attrNames goodCfg.nixk3s.apps) == workloadNames;
+
+    "the factory projection is exactly the hand-written translator's resolved nixk3s.apps tree" =
+      goodCfg.nixk3s.apps == legacyCfg.nixk3s.apps;
+
+    "the legacy slot report remains an exact alias of the factory slot report" =
+      goodCfg.nixhome.slots == goodCfg.nixhome.clusterSlots;
+
+    "factory route reports prove that every declaration still takes the grammar path" =
+      goodCfg.nixhome.renderedByGrammar == workloadNames
+      && goodCfg.nixhome.renderedDirectly == [ ]
+      && goodCfg.nixhome.notRendered == [ ];
 
     # ── The domain decides the namespace ──────────────────────────────────────────────────────
     "each workload lands in the namespace its DOMAIN resolves to, not one it named" =
@@ -346,6 +489,12 @@ let
     "and without that switch the apps name no origin at all -- those are the band model's terms" =
       goodCfg.nixk3s.apps.assets.origin == null && goodCfg.nixk3s.apps.assets.slot == null;
 
+    "slot without origin has exactly one shared factory warning" =
+      lib.length slotWithoutOriginMessages == 1;
+
+    "a legacy whole-image override does not acquire the factory's new warning" =
+      wholeImageWarningMessages == [ ];
+
     # ── The failing direction ─────────────────────────────────────────────────────────────────
     "every guard fires: nothing in the must-fail set renders" =
       wronglyRendered == [ ];
@@ -358,6 +507,12 @@ let
 
     "the unbacked-directory refusal says which directories the application writes, and where" =
       unbackedMessageNames;
+
+    "slot collision has exactly one shared factory diagnostic" =
+      lib.length slotCollisionMessages == 1;
+
+    "namespace anchor collision has exactly one shared factory diagnostic" =
+      lib.length namespaceAnchorMessages == 1;
   };
 
   failed = lib.attrNames (lib.filterAttrs (_: passed: !passed) results);

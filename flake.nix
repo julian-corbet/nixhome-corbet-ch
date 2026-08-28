@@ -1,11 +1,6 @@
 {
   description = "nixhome — the self-hosted applications that run a household: what you own, what you have to restock, and what has to get done";
 
-  # NO INPUTS FOR CONSUMERS, the same reasoning the sibling catalogues state for themselves: this
-  # flake is options plus a catalogue, taking `config`/`lib` from whichever evaluation composes it,
-  # so a real cluster render never puts a second nixpkgs -- or a sibling flake's whole input closure
-  # -- into its own closure. Everything below is used by `checks` alone; nothing this flake EXPORTS
-  # reaches into any of it.
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -17,11 +12,9 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    # THE APP GRAMMAR THIS REPOSITORY CONSUMES. Also checks-only, and that is the point being proven
-    # rather than a shortcut: a consumer imports the grammar itself, and this input exists so
-    # `nix flake check` can render this module through the REAL grammar and assert the manifests
-    # that come out -- rather than asserting that a module which merely mentions `nixk3s.apps`
-    # evaluates.
+    # THE APP GRAMMAR AND ITS CONSUMER FACTORY. Consumers still import the app module alongside
+    # nixhome; the exported nixhome module is now built from the same factory that translates the
+    # rest of the catalogue family.
     nixk3s = {
       url = "github:julian-corbet/nixk3s-corbet-ch";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -39,8 +32,11 @@
       # The one plane this repository has. Composed into a nixidy environment ALONGSIDE the app
       # grammar, which declares the options this module defines into -- see modules/cluster.nix's
       # own header.
-      nixidyModules.nixhome = ./modules/cluster.nix;
-      nixidyModules.default = ./modules/cluster.nix;
+      nixidyModules.nixhome = import ./modules/cluster.nix {
+        catalogue = self.lib.trackers;
+        mkConsumerModule = nixk3s.lib.mkConsumerModule;
+      };
+      nixidyModules.default = self.nixidyModules.nixhome;
 
       # NO `nixosModules` AND NO `systemManagerModules`, and that is a statement rather than a gap.
       # A household's record lives in a cluster and is read through a browser; there is no command
@@ -49,7 +45,7 @@
 
       # The module and the raw catalogue, for a consumer that wants to inspect either without
       # re-reading the files.
-      lib.cluster = ./modules/cluster.nix;
+      lib.cluster = self.nixidyModules.nixhome;
       lib.trackers = import ./lib/trackers.nix { };
 
       # `nix flake check` evaluates none of the module outputs on its own, so a green check on this
@@ -80,6 +76,7 @@
           # declaration that must be refused.
           cluster-eval = import ./checks/cluster-eval.nix {
             inherit pkgs lib nixidy;
+            catalogue = self.lib.trackers;
             appsModule = nixk3s.nixidyModules.apps;
             addressingModule = nixk3s.nixidyModules.addressing;
             clusterModule = self.nixidyModules.nixhome;
