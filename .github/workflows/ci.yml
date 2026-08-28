@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: nix flake check (${{ matrix.system }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: nix flake check (${{ matrix.system }})
+        run: |
+          set -euo pipefail
+          actual=$(nix eval --impure --raw --expr builtins.currentSystem)
+          if [ "$actual" != "${{ matrix.system }}" ]; then
+            echo "runner is '$actual', expected '${{ matrix.system }}'" >&2
+            exit 1
+          fi
+          nix flake check --keep-going --print-build-logs
+
+  eval-all-systems:
+    name: every declared system evaluates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: nix flake check --all-systems --no-build
+        run: nix flake check --all-systems --no-build --keep-going --print-build-logs
