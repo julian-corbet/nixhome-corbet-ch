@@ -183,7 +183,11 @@ let
       secrets = legacySecretsOf w;
       env = entry.env // w.env;
       args = entry.args ++ w.args;
-      probes.readiness = { port = entry.primaryPort; } // entry.readiness;
+      probes = {
+        readiness = { port = entry.primaryPort; } // entry.readiness;
+      } // lib.optionalAttrs ((entry.liveness or null) != null) {
+        liveness = { port = entry.primaryPort; } // entry.liveness;
+      };
     };
 
   legacyApps =
@@ -453,9 +457,17 @@ let
       && goodCfg.nixk3s.apps.groceries.probes.readiness.path == null
       && goodCfg.nixk3s.apps.groceries.probes.readiness.initialDelaySeconds == 15;
 
-    "no liveness probe is ever synthesized -- two of these migrate a schema on start" =
-      lib.all (a: a.probes.liveness == null && a.probes.startup == null)
-        (lib.attrValues goodCfg.nixk3s.apps);
+    "each tracker keeps its established restart opinion, while the unmeasured companion gets none" =
+      goodCfg.nixk3s.apps.assets.probes.liveness.path == "/"
+      && goodCfg.nixk3s.apps.inventory.probes.liveness.path == "/api/v1/status"
+      && goodCfg.nixk3s.apps.groceries.probes.liveness.path == null
+      && goodCfg.nixk3s.apps.chores.probes.liveness.path == "/"
+      && lib.all
+        (name: goodCfg.nixk3s.apps.${name}.probes.liveness.periodSeconds == 15
+          && goodCfg.nixk3s.apps.${name}.probes.liveness.failureThreshold == 6)
+        [ "assets" "inventory" "groceries" "chores" ]
+      && goodCfg.nixk3s.apps.scanner.probes.liveness == null
+      && lib.all (a: a.probes.startup == null) (lib.attrValues goodCfg.nixk3s.apps);
 
     # ── Credentials are references ────────────────────────────────────────────────────────────
     "a named credential arrives as a reference to a Secret and a key, never as a value" =

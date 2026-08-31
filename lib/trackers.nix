@@ -94,6 +94,9 @@
 #   `readiness`    probe shape and timing. `path` is the HTTP path that answers, or `null` for a TCP
 #                  connect where the application has no cheap health endpoint. The seconds are
 #                  measured rather than guessed -- see ../experiments/probe-readiness.sh.
+#   `liveness`     an independent restart opinion where the software has one, or absent. Readiness
+#                  only decides whether traffic reaches a process; liveness is stated separately
+#                  because its verdict kills that process and therefore needs its own evidence.
 #   `background`   WHAT THE APPLICATION DOES WHEN NOBODY IS LOOKING, or `null` when everything it
 #                  computes is computed in answer to a request. This is the field that decides
 #                  whether idling at zero replicas is lossless or merely quiet: a request-driven
@@ -151,6 +154,12 @@
         periodSeconds = 5;
         timeoutSeconds = 1;
         failureThreshold = 24;
+      };
+      liveness = {
+        path = "/";
+        periodSeconds = 15;
+        timeoutSeconds = 1;
+        failureThreshold = 6;
       };
 
       note = ''
@@ -223,6 +232,12 @@
         timeoutSeconds = 1;
         failureThreshold = 24;
       };
+      liveness = {
+        path = "/api/v1/status";
+        periodSeconds = 15;
+        timeoutSeconds = 1;
+        failureThreshold = 6;
+      };
 
       note = ''
         A home inventory: one row per item, with a LOCATION, LABELS, a quantity, a purchase price,
@@ -281,6 +296,12 @@
         periodSeconds = 5;
         timeoutSeconds = 1;
         failureThreshold = 24;
+      };
+      liveness = {
+        path = null;
+        periodSeconds = 15;
+        timeoutSeconds = 1;
+        failureThreshold = 6;
       };
 
       note = ''
@@ -358,6 +379,12 @@
         periodSeconds = 5;
         timeoutSeconds = 1;
         failureThreshold = 24;
+      };
+      liveness = {
+        path = "/";
+        periodSeconds = 15;
+        timeoutSeconds = 1;
+        failureThreshold = 6;
       };
 
       note = ''
