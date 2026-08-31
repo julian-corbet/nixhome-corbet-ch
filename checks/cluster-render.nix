@@ -161,9 +161,19 @@ pkgs.runCommand "nixhome-cluster-render"
     "$(y '.spec.template.spec.containers[0].readinessProbe.initialDelaySeconds' $GR_D)"
   check "a patient first-boot budget" "24" \
     "$(y '.spec.template.spec.containers[0].readinessProbe.failureThreshold' $AS_D)"
+  check "the asset tracker restarts only after its established HTTP budget" "/" \
+    "$(y '.spec.template.spec.containers[0].livenessProbe.httpGet.path' $AS_D)"
+  check "the inventory liveness probe uses its own status endpoint" "/api/v1/status" \
+    "$(y '.spec.template.spec.containers[0].livenessProbe.httpGet.path' $IN_D)"
+  check "the ERP liveness probe stays a TCP connect" "80" \
+    "$(y '.spec.template.spec.containers[0].livenessProbe.tcpSocket.port' $GR_D)"
+  check "the chore tracker liveness probe waits six fifteen-second misses" "6" \
+    "$(y '.spec.template.spec.containers[0].livenessProbe.failureThreshold' $CH_D)"
+  check "the unmeasured companion still gets no liveness opinion" "null" \
+    "$(y '.spec.template.spec.containers[0].livenessProbe' $SC_D)"
   for d in "$AS_D" "$IN_D" "$GR_D" "$CH_D" "$SC_D"; do
-    check "$(basename $d): no liveness probe was synthesized" "null" \
-      "$(y '.spec.template.spec.containers[0].livenessProbe' $d)"
+    check "$(basename $d): no startup-kill budget was invented" "null" \
+      "$(y '.spec.template.spec.containers[0].startupProbe' $d)"
   done
 
   echo "== scale-to-zero: the replica count belongs to the wake front, and what stops is countable =="
